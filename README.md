@@ -2,6 +2,16 @@
 
 针对 `xhongc/music_tag_web:latest`（v2.8.2）的 V1/V2 鉴权逆向分析。
 
+## 镜像
+
+```bash
+docker pull ghcr.io/zyphoriate/musictag:latest
+```
+
+公开包（`latest` / `v2.8.2`），可匿名拉取，CI 见
+[`.github/workflows/docker-publish.yml`](.github/workflows/docker-publish.yml)，
+构建说明见 [`docker-v2/README.md`](docker-v2/README.md)。
+
 ## 直接看
 
 - **完整报告**：[`report/music_tag_web_v1_v2_auth.md`](report/music_tag_web_v1_v2_auth.md)
