@@ -36,3 +36,12 @@ jobs:
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.description=Music Tag Web local test image with self-signed V2 license
+
+      - name: Make package public
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -x
+          gh api --method PATCH /user/packages/container/musictag -f visibility=public || true
+          gh api --method PATCH "/repos/${{ github.repository }}/packages/container/musictag" -f visibility=public || true
