@@ -54,6 +54,11 @@ cd /app
 run_migrations
 run_activation
 
+# This image never relies on `command:` from compose: activation runs in the
+# entrypoint, so `command: /start` and the default CMD behave the same here.
+echo "requested command args (ignored): $*"
+echo "gunicorn=${GUNICORN_PORT:-8001} nginx=${NGINX_PORT:-8002} user=${MY_PROGRAM_USER}"
+
 if [ "$PUID" -eq 0 ] || [ "$PGID" -eq 0 ]; then
     exec /usr/bin/supervisord -c /app/supervisor-root.conf
 else

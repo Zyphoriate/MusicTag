@@ -75,6 +75,41 @@ PY
 {'role': 'V2', 'validated': True, 'message': '验证通过', ...}
 ```
 
+## 页面显示 V1 怎么排查
+
+这个镜像的 `ENTRYPOINT` 自己跑 migrate + 激活，`command:` 被忽略，所以
+「端口 8001 + `command: /start`」和「端口 8002 + 默认 CMD」在授权状态上完全等价，
+端口不可能是 V1/V2 的原因。
+
+1. 看启动日志，激活结果会直接打出来：
+
+   ```bash
+   docker logs <容器名> 2>&1 | grep -E "license state|requested command|gunicorn="
+   ```
+
+   正常应看到：
+
+   ```text
+   V2 license activated
+   runtime license state: role=V2 validated=True message=验证通过
+   requested command args (ignored): /usr/bin/supervisord
+   gunicorn=8001 nginx=8002 user=root
+   ```
+
+2. 没有这几行 → 容器在 migrate 或激活阶段就退出/重启了，看完整日志里的
+   `Traceback`，常见原因是数据目录权限（`PUID`/`PGID`）或 SQLite 文件损坏。
+
+3. 日志里是 `role=V2` 但网页还是显示 V1 → 浏览器同源缓存。同一端口上先跑过
+   未授权的官方镜像时，前端的授权状态会留在 localStorage / Service Worker 里。
+   用无痕窗口打开同一个地址确认，或对该站点「清除站点数据」后强刷。
+
+4. 确认后端状态：
+
+   ```bash
+   docker exec <容器名> python -c "import os,sys;os.environ.setdefault('DJANGO_SETTINGS_MODULE','django_vue_cli.settings');sys.path.insert(0,'/app');import django;django.setup();from applications.user.utils import get_runtime_license_state;print(get_runtime_license_state())"
+   ```
+
+
 ## 注意事项
 
 - 这是**自签 license**，不是官方授权。构建镜像时会覆盖官方公钥，

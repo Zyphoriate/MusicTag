@@ -48,6 +48,19 @@ def main() -> None:
         print(f"{'created' if created else 'updated'} SysSettings[{key}]")
     print("V2 license activated")
 
+    # Report what the application will actually see, so `docker logs` alone is
+    # enough to tell V1 from V2 without poking at the database by hand.
+    try:
+        from applications.user import utils as license_utils
+
+        state = license_utils.get_runtime_license_state()
+        print(
+            "runtime license state: role=%s validated=%s message=%s"
+            % (state.get("role"), state.get("validated"), state.get("message"))
+        )
+    except Exception as exc:  # diagnostics only, never block startup
+        print(f"runtime license state check failed: {exc!r}")
+
 
 if __name__ == "__main__":
     main()
