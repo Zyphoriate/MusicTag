@@ -41,38 +41,25 @@ jobs:
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.description=Music Tag Web image
 
-      - name: Make package public
-        env:
-          # GITHUB_TOKEN can push but cannot change package visibility.
-          # Set a repo secret GH_PAT (classic PAT with write:packages) to automate it.
-          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-          GH_HOST: github.com
+      - name: Verify anonymous pull
         run: |
           set -euo pipefail
-          api_hdr=(-H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28")
-
-          try_patch() {
-            local endpoint="$1"
-            local out status
-            out=$(gh api --method PATCH "$endpoint" "${api_hdr[@]}" -f visibility=public 2>&1) && {
-              echo "OK: $endpoint"
-              echo "$out" | head -40
-              return 0
-            } || status=$?
-            echo "FAIL($status): $endpoint"
-            echo "$out" | head -10
-            return 1
-          }
-
-          ok=0
-          try_patch "/repos/${GITHUB_REPOSITORY}/packages/container/${PKG}" && ok=1
-          [ "$ok" -eq 1 ] || try_patch "/user/packages/container/${PKG}" || true
-
-          echo "::group::verify anonymous pull"
+          # A package created by a workflow in a public repository is public.
+          # A package created while the repo was private stays private forever:
+          # GitHub exposes no API to change container package visibility.
+          tok=$(curl -fsS "https://ghcr.io/token?service=ghcr.io&scope=repository:zyphoriate/${PKG}:pull" \
+                | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
           code=$(curl -s -o /dev/null -w '%{http_code}' \
-            "https://ghcr.io/token?service=ghcr.io&scope=repository:zyphoriate/${PKG}:pull")
-          echo "anonymous token endpoint: HTTP $code"
-          echo "::endgroup::"
-          if [ "$code" != "200" ]; then
-            echo "::warning::package still private (anonymous token HTTP $code). A token with write:packages is required, or flip visibility in package settings."
-          fi
+                 -H "Authorization: Bearer ${tok}" \
+                 -H 'Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json' \
+                 "https://ghcr.io/v2/zyphoriate/${PKG}/manifests/latest")
+          echo "anonymous manifest: HTTP ${code}"
+          [ "${code}" = "200" ] || { echo "::error::package is not anonymously pullable (HTTP ${code})"; exit 1; }
+
+      - name: Summary
+        run: |
+          echo "### ${{ env.IMAGE }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "digest: ${{ steps.push.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+          echo 'docker pull ${{ env.IMAGE }}:latest' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
