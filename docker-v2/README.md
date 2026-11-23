@@ -48,13 +48,18 @@ docker run -d \
 
 `PUID` / `PGID` 用法与官方镜像一致（默认 0/0 以 root 运行）。
 
-与官方镜像的两点差异：
+与官方镜像的三点差异：
 
 1. `ENTRYPOINT` 自己执行 `migrate` + 写授权，然后再起 supervisord；`command:` 会被忽略。
 2. supervisord 里的 gunicorn 用 `/start-gunicorn.sh` 直接拉起，不再执行基镜像的 `/start`。
    `/start` 里还有一次 `manage.py migrate`，会和 celery beat/worker 的写入抢 SQLite，
    日志里会出现 `sqlite3.OperationalError: database is locked`（官方镜像同样存在）。
    本镜像只 migrate 一次，因此这类报错消失。
+3. 授权状态缓存在 redis 上，而 gunicorn 用的是 uvicorn worker + gevent，
+   Django 的同步视图跑在 asgiref 线程池里，跨 greenlet 复用 redis 连接会抛
+   `greenlet.error: cannot switch to a different thread`，导致每个读授权状态的接口
+   直接 500 —— 前端拿不到 V2 就会退回显示 V1。本镜像在缓存出错时降级为进程内字典，
+   接口不再 500（`local_license_runtime._install_greenlet_safe_cache`）。
 
 ## 验证
 

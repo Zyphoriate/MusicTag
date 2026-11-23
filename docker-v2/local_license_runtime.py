@@ -44,8 +44,82 @@ def setup(*args, **kwargs):
     return result
 
 
+_CACHE_FALLBACK = {}
+
+
+def _install_greenlet_safe_cache():
+    """Keep the license path alive when redis misbehaves in the ASGI worker.
+
+    gunicorn runs the app with the uvicorn worker under gevent monkeypatching;
+    Django executes sync views in an asgiref thread pool. A redis connection
+    opened in one greenlet and reused from another raises
+    ``greenlet.error: cannot switch to a different thread``, which makes every
+    request that reads the runtime license state answer HTTP 500 -- the UI then
+    falls back to showing V1. Losing the cache is harmless, so on failure we
+    degrade to a process-local dict instead of failing the request.
+    """
+    try:
+        from django_redis.cache import RedisCache
+    except Exception:
+        return
+    if getattr(RedisCache, '_mtw_local_fallback', False):
+        return
+
+    store = _CACHE_FALLBACK
+
+    def patch(name, fallback):
+        original = getattr(RedisCache, name, None)
+        if original is None:
+            return
+
+        @functools.wraps(original)
+        def wrapper(self, *args, **kwargs):
+            try:
+                return original(self, *args, **kwargs)
+            except Exception:
+                return fallback(*args, **kwargs)
+
+        setattr(RedisCache, name, wrapper)
+
+    def local_get(key, default=None, *args, **kwargs):
+        return store.get(key, default)
+
+    def local_set(key, value, *args, **kwargs):
+        if kwargs.get('nx') and key in store:
+            return False
+        store[key] = value
+        return True
+
+    def local_add(key, value, *args, **kwargs):
+        if key in store:
+            return False
+        store[key] = value
+        return True
+
+    def local_delete(key, *args, **kwargs):
+        return 1 if store.pop(key, None) is not None else 0
+
+    def local_get_many(keys, *args, **kwargs):
+        return {k: store[k] for k in keys if k in store}
+
+    def local_set_many(data, *args, **kwargs):
+        store.update(data)
+        return True
+
+    patch('get', local_get)
+    patch('set', local_set)
+    patch('add', local_add)
+    patch('delete', local_delete)
+    patch('get_many', local_get_many)
+    patch('set_many', local_set_many)
+    RedisCache._mtw_local_fallback = True
+
+
 def install():
     import sys
+
+    _install_greenlet_safe_cache()
+
     import applications.user.utils as utils
     old = utils.verify_code
     if getattr(old, '_local_demo_adapter', False):
