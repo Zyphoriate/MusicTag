@@ -17,7 +17,13 @@
 运行时 `get_runtime_license_state()` 会用镜像内被替换过的公钥离线验签 blob，
 得到 `role=V2`，不再访问 IAM。
 
-## 构建
+## 拉取（已发布）
+
+```bash
+docker pull ghcr.io/zyphoriate/musictag:latest
+```
+
+## 本地构建
 
 ```bash
 cd docker-v2
@@ -31,7 +37,7 @@ docker run -d \
   --name music-tag-web-v2 \
   -p 8002:8002 \
   -v /your/music/dir:/app/media \
-  music-tag-web-v2
+  ghcr.io/zyphoriate/musictag:latest
 ```
 
 `PUID` / `PGID` 用法与官方镜像一致（默认 0/0 以 root 运行）。
