@@ -1,0 +1,84 @@
+程序启动数据库：SQLite
+程序启动方式：V1部署
+== V1_VIEW_LIST (permission.constans) ==
+['user_info', 'user_active', 'task_file_list', 'task_music_id3', 'task_update_id3', 'task_batch_update_id3', 'task_batch_auto_update_id3', 'task_fetch_lyric', 'task_fetch_id3_by_title', 'task_translation_lyc', 'task_extract_lyric', 'task_tidy_folder', 'task_remove_null_folder', 'task_split_filename', 'task_simplified_fields', 'task_update_folder_state', 'task_replace_text', 'task_format_music_type', 'task_split_cue', 'task_file_id3_list', 'task_fix_encoding', 'task_upload_image', 'artist_aliases', 'sys_list', 'sys_create', 'record_list', 'record_create', 'audit_log_list', 'runtime_log_list', 'plugin_list']
+
+== V2 signed license blob format ==
+blob = urlsafe_b64(payload_json) + "." + urlsafe_b64(RSA-PKCS1v15-SHA256(payload_json))
+payload example = {'schema_version': 'signed_v1', 'expires_at': 1795435466, 'license_mac': 'bc:24:11:8a:f0', 'license_channel': 'docker', 'role': 'V2'}
+
+== V2 verification matrix ==
+valid                                      (True, '验证通过', {'expires_at': 1795435466, 'license_channel': 'docker', 'license_mac': 'bc:24:11:8a:f0', 'role': 'V2', 'schema_version': 'signed_v1'})
+schema mismatch                            (False, '许可证版本不匹配', {})
+missing schema                             (False, '许可证版本不匹配', {})
+missing expires_at                         (False, '许可证缺少过期时间', {})
+expired                                    (False, '许可证已过期', {})
+wrong license_mac (not enforced)           (True, '验证通过', {'expires_at': 1795435466, 'license_channel': 'docker', 'license_mac': '00:11:22:33:44:55', 'role': 'V2', 'schema_version': 'signed_v1'})
+wrong license_channel (not enforced)       (True, '验证通过', {'expires_at': 1795435466, 'license_channel': 'app', 'license_mac': 'bc:24:11:8a:f0', 'role': 'V2', 'schema_version': 'signed_v1'})
+bad signature                              (False, '许可证签名无效', {})
+
+== V1 legacy/online verify request (verify_code, mode=runtime) ==
+state => {'role': 'V1', 'validated': False, 'message': '许可证服务未返回新版签名许可证'}
+POST URL: http://47.106.155.6:7999/iam/code/verify/
+POST body: {'code': 'RAWCODE', 'mac_address': 'bc:24:11:8a:f0', 'timestamp': 1795349066, 'sign': '0ad9b22d7e0703273202d8083b05c7a3a8ece78e621915b67e62faf20bc7b71e'}
+POST headers: {'User-Agent': 'MusicTagWeb-runtime/dev (docker)', 'X-MTW-Version': 'dev', 'X-MTW-Mode': 'runtime', 'X-MTW-Channel': 'docker', 'X-MTW-Build': '', 'X-MTW-Build-Env': '', 'X-MTW-License-Schema': 'signed_v1'}
+sign = sha256(salt + code + mac_address + timestamp), salt = ahsdok1238uasdjklxcjzxc9098qsacharles
+IAM response must contain data.license_blob + data.license_schema; otherwise: (False, '许可证服务未返回新版签名许可证', '', '', '')
+
+== IamPermission matrix (view basename/action) ==
+--- instance role: V1
+  normal   task_file_list           => True
+[2026-11-22 20:04:26] V1用户缺少权限：task_delete_files
+  normal   task_delete_files        => False
+  normal   user_info                => True
+  normal   sys_list                 => True
+[2026-11-22 20:04:26] V1用户缺少权限：task_task_file_list
+  normal   task_task_file_list      => False
+[2026-11-22 20:04:26] V1用户缺少权限：music_album
+  normal   music_album              => False
+  admin    task_file_list           => True
+[2026-11-22 20:04:26] V1用户缺少权限：task_delete_files
+  admin    task_delete_files        => False
+  admin    user_info                => True
+  admin    sys_list                 => True
+[2026-11-22 20:04:26] V1用户缺少权限：task_task_file_list
+  admin    task_task_file_list      => False
+[2026-11-22 20:04:26] V1用户缺少权限：music_album
+  admin    music_album              => False
+--- instance role: V2
+  normal   task_file_list           => True
+  normal   task_delete_files        => True
+  normal   user_info                => True
+  normal   sys_list                 => True
+  normal   task_task_file_list      => True
+  normal   music_album              => True
+  admin    task_file_list           => True
+  admin    task_delete_files        => True
+  admin    user_info                => True
+  admin    sys_list                 => True
+  admin    task_task_file_list      => True
+  admin    music_album              => True
+[2026-11-22 20:04:26] 当前登录凭证已过期，请重新完成登录操作以恢复服务访问
+  anonymous any => False
+
+== AccessTokenPermission (SysSettings.access_token) ==
+  access_token=''     header=None           => False
+  access_token=''     header='abc'          => False
+  access_token=''     header='Bearer abc'   => False
+  access_token=''     header='Bearer  abc'  => False
+  access_token=''     header='JWT abc'      => False
+  access_token='abc'  header=None           => False
+  access_token='abc'  header='abc'          => True
+  access_token='abc'  header='Bearer abc'   => True
+  access_token='abc'  header='Bearer  abc'  => False
+  access_token='abc'  header='JWT abc'      => False
+
+== MCP _check_auth ==
+  access_token=''     header=None           => allow
+  access_token=''     header='abc'          => allow
+  access_token=''     header='Bearer abc'   => allow
+  access_token=''     header='JWT abc'      => allow
+  access_token='abc'  header=None           => 401
+  access_token='abc'  header='abc'          => allow
+  access_token='abc'  header='Bearer abc'   => allow
+  access_token='abc'  header='JWT abc'      => 401

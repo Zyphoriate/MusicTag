@@ -1,0 +1,13 @@
+image: xhongc/music_tag_web:latest (amd64)
+index_digest: sha256:4682a379f3b420afcbe0439ae2a78b2641748a96df60b9cfbec9600c804885fe
+amd64_manifest_digest: sha256:b039ae9efc72f39f19396bef7c3ae54e5a282bc9ec7d77e43d683304d9353211
+config_digest: sha256:972972c60d5f103df4c490b45636f77c33342e9f95e505c4130346657b7d0cf0
+created: 2026-11-20T09:31:26.280486Z
+APP_VERSION=2.8.2
+APP_BUILD=ff55c35fc908a79a87d838090f09ca9a26fd9e88
+APP_CHANNEL=docker
+base_image: python:3.11.18 (Debian 12)
+entrypoint: /entrypoint.sh
+cmd: /usr/bin/supervisord
+expose: 8002/tcp
+layers: 29 (compressed total ~258 MB)

@@ -1,0 +1,14 @@
+services:
+  music-tag-web:
+    image: music-tag-web-v2:local-test
+    build: .
+    container_name: music-tag-web-v2-test
+    ports:
+      - "192.168.1.6:18002:8002"
+    volumes:
+      - test-data:/app/data
+      - test-media:/app/media
+    restart: unless-stopped
+volumes:
+  test-data:
+  test-media:

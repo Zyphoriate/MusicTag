@@ -1,0 +1,21 @@
+== POST /apimt/token/ ==
+HTTP 200
+{"token":"<redacted>" ,"user":{"id":2,"username":"normal"},"result":true}
+
+== access token header/payload ==
+header: {"alg":"HS256","typ":"JWT"}
+payload: {"token_type":"access","exp":"<redacted>","iat":"<redacted>","jti":"<redacted>","user_id":"2"}
+
+== login failure ==
+HTTP 200 {"result":false,"msg":"用户名或密码错误"}
+
+== /user/info/ with JWT ==
+HTTP 200
+{"result":true,"code":"200","data":{"username":"normal","display_name":"normal","is_superuser":false,"role":"V1","is_forever":false,...},"message":"success"}
+
+== forged JWT with baked-in SECRET_KEY ==
+forged token accepted: True HTTP 200
+The baked-in SECRET_KEY and token bytes are intentionally omitted. The report records this as a security finding without publishing replayable credentials.
+
+== server Set-Cookie on login ==
+cookies: {}

@@ -1,0 +1,9 @@
+# Local runtime credentials and test exports
+docker-v2/test-license.txt
+docker-v2/test-public-key.pem
+docker-v2/TEST-INSTANCE.md
+
+# Local caches / generated files
+__pycache__/
+*.pyc
+.mtw-image/
