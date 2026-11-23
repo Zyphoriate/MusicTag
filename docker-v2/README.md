@@ -48,7 +48,7 @@ docker run -d \
 
 `PUID` / `PGID` 用法与官方镜像一致（默认 0/0 以 root 运行）。
 
-与官方镜像的三点差异：
+与官方镜像的四点差异：
 
 1. `ENTRYPOINT` 自己执行 `migrate` + 写授权，然后再起 supervisord；`command:` 会被忽略。
 2. supervisord 里的 gunicorn 用 `/start-gunicorn.sh` 直接拉起，不再执行基镜像的 `/start`。
@@ -60,6 +60,12 @@ docker run -d \
    `greenlet.error: cannot switch to a different thread`，导致每个读授权状态的接口
    直接 500 —— 前端拿不到 V2 就会退回显示 V1。本镜像在缓存出错时降级为进程内字典，
    接口不再 500（`local_license_runtime._install_greenlet_safe_cache`）。
+4. 运行时角色直接由本地签名 blob 推导：`get_runtime_license_state` 的定时复核
+   （`LICENSE_RECHECK_SECONDS`，默认 1800s）一旦失败（redis、IAM、SQLite 锁任一出问题），
+   官方逻辑会退回 V1，页面就切成 V1 布局、非白名单接口全部报
+   `V1用户缺少权限：xxx`。本镜像在正常路径拿不到已验证的 V2 时，直接用 blob 复算
+   （`local_license_runtime._patch_license_state`）。实测把容器内 redis 停掉，
+   `/user/info/` 仍返回 `role: "V2"`。
 
 ## 验证
 

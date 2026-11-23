@@ -144,5 +144,63 @@ def install():
         if namespace.get('verify_code') is old:
             namespace['verify_code'] = verify_code
 
+    _patch_license_state(utils)
+
+
+def _patch_license_state(utils):
+    """Make the runtime state derive from the signed blob, never from IAM.
+
+    ``get_runtime_license_state`` caches its result and re-verifies it every
+    ``LICENSE_RECHECK_SECONDS``. Inside gunicorn that recheck can fail (redis
+    cache, IAM round trip, SQLite lock) and the app then falls back to role V1
+    -- the UI flips to the V1 layout and every non-whitelisted endpoint answers
+    "V1用户缺少权限". The license is local and signed, so when the normal path
+    cannot produce a validated V2 state, compute it straight from the blob.
+    """
+    import sys
+    import time
+
+    old = utils.get_runtime_license_state
+    if getattr(old, '_local_demo_adapter', False):
+        return
+
+    @functools.wraps(old)
+    def get_runtime_license_state(*args, **kwargs):
+        try:
+            state = old(*args, **kwargs)
+        except Exception:
+            state = None
+        if isinstance(state, dict) and state.get('role') == 'V2' and state.get('validated'):
+            return state
+        return _v2_state_from_blob(utils)
+
+    get_runtime_license_state._local_demo_adapter = True
+    utils.get_runtime_license_state = get_runtime_license_state
+    for module in tuple(sys.modules.values()):
+        namespace = getattr(module, '__dict__', {})
+        if namespace.get('get_runtime_license_state') is old:
+            namespace['get_runtime_license_state'] = get_runtime_license_state
+
+
+def _v2_state_from_blob(utils):
+    import time
+
+    now = int(time.time())
+    try:
+        _, blob = local_license()
+        valid, message, payload = utils._validate_local_signed_license(blob)
+    except Exception as exc:
+        valid, message, payload = False, repr(exc), None
+    payload = payload or {}
+    return {
+        'role': 'V2' if valid else 'V1',
+        'validated': bool(valid),
+        'message': message,
+        'recheck_at': now + int(getattr(utils, 'LICENSE_RECHECK_SECONDS', 1800) or 1800),
+        'grace_expires_at': now + int(getattr(utils, 'LICENSE_GRACE_SECONDS', 86400) or 86400),
+        'license_payload': payload,
+        'expires_at': payload.get('expires_at', now + 86400),
+    }
+
 
 django.setup = setup
