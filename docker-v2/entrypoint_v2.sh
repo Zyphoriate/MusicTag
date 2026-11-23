@@ -9,7 +9,7 @@ PUID=${PUID:-0}
 PGID=${PGID:-0}
 UMASK=${UMASK:-022}
 
-mkdir -p /app/log
+mkdir -p /app/log /app/data /app/media /app/download /app/virtual /app/webdav
 umask "$UMASK"
 
 if [ "$PUID" -eq 0 ] || [ "$PGID" -eq 0 ]; then
