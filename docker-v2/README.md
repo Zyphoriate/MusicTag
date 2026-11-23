@@ -23,6 +23,9 @@
 docker pull ghcr.io/zyphoriate/musictag:latest
 ```
 
+镜像：`ghcr.io/zyphoriate/musictag`（`latest`、`v2.8.2`），digest
+`sha256:bc6dea0976d9d072cebba2c8c26b28e363d12d760fcd6bcc99005376ae4c4231`。
+
 ## 本地构建
 
 ```bash
