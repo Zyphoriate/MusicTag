@@ -30,8 +30,15 @@ RUN /usr/local/bin/python3 /tmp/gen_license.py \
 ENV MTW_LOCAL_TEST_LICENSE=1
 COPY local_license_runtime.py sitecustomize.py /usr/local/lib/python3.11/site-packages/
 COPY activate_v2.py /activate_v2.py
-COPY entrypoint_v2.sh /entrypoint_v2.sh
-RUN chmod +x /entrypoint_v2.sh /activate_v2.py
+COPY entrypoint_v2.sh /start-gunicorn.sh /
+RUN chmod +x /entrypoint_v2.sh /activate_v2.py /start-gunicorn.sh
+
+# The entrypoint already migrated before supervisord starts, so the gunicorn
+# program must not run /start again (that would migrate a second time and race
+# celery beat/worker on the SQLite database).
+RUN sed -i 's#^command = /start$#command = /start-gunicorn.sh#' \
+        /app/supervisor.conf /app/supervisor-root.conf \
+    && grep -H '^command = /start-gunicorn.sh$' /app/supervisor.conf /app/supervisor-root.conf
 
 ENTRYPOINT ["/entrypoint_v2.sh"]
 CMD ["/usr/bin/supervisord"]

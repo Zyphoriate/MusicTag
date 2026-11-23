@@ -48,6 +48,14 @@ docker run -d \
 
 `PUID` / `PGID` 用法与官方镜像一致（默认 0/0 以 root 运行）。
 
+与官方镜像的两点差异：
+
+1. `ENTRYPOINT` 自己执行 `migrate` + 写授权，然后再起 supervisord；`command:` 会被忽略。
+2. supervisord 里的 gunicorn 用 `/start-gunicorn.sh` 直接拉起，不再执行基镜像的 `/start`。
+   `/start` 里还有一次 `manage.py migrate`，会和 celery beat/worker 的写入抢 SQLite，
+   日志里会出现 `sqlite3.OperationalError: database is locked`（官方镜像同样存在）。
+   本镜像只 migrate 一次，因此这类报错消失。
+
 ## 验证
 
 ```bash
@@ -76,7 +84,6 @@ PY
 ```
 
 ## 页面显示 V1 怎么排查
-
 这个镜像的 `ENTRYPOINT` 自己跑 migrate + 激活，`command:` 被忽略，所以
 「端口 8001 + `command: /start`」和「端口 8002 + 默认 CMD」在授权状态上完全等价，
 端口不可能是 V1/V2 的原因。
