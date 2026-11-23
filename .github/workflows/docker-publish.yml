@@ -43,7 +43,9 @@ jobs:
 
       - name: Make package public
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GITHUB_TOKEN can push but cannot change package visibility.
+          # Set a repo secret GH_PAT (classic PAT with write:packages) to automate it.
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
           GH_HOST: github.com
         run: |
           set -euo pipefail
