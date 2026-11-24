@@ -55,6 +55,7 @@ docker run -d \
 
 | 层 | 位置 | 做什么 |
 |---|---|---|
+| 实例角色 | `get_runtime_role()` | 直接返回 `V2`：UI 布局与权限检查共用这一个汇聚点（见 [`AUTH-CHAIN.md`](AUTH-CHAIN.md)） |
 | 数据库 | `activate_v2.py`（entrypoint 内执行） | 往 `SysSettings` 写 `code` / `raw_code` / `license_blob` / `license_schema=signed_v1` |
 | 通用函数 | `license_crypto.verify_signed_license_blob` | 先跑原逻辑；原逻辑失败且 blob 是本镜像的演示 blob 时，返回 `(True, '验证通过', payload)` |
 | 通用函数 | `utils.verify_code` / `utils._validate_local_signed_license` | 同上：真码先走原逻辑，演示码才放行 |

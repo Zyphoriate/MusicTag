@@ -128,6 +128,42 @@ def _patch_license_verifier(sys):
     utils.verify_code = verify_code
     _replace_references(sys, 'verify_code', original_verify_code, verify_code)
 
+    _patch_runtime_role(sys, utils)
+
+
+def _patch_runtime_role(sys, utils):
+    """Answer "what role is this instance" with V2 -- the single choke point.
+
+    Reverse engineering of the shipped modules
+    (``applications/user/utils.so``, ``applications/permission/utils.so``):
+
+        IamPermission.has_permission
+          -> get_request_role(request)
+               -> get_runtime_role()
+                    -> get_runtime_license_state()      # license blob / cache
+                       -> _resolved_license_role        # V1 when verification fails
+        /user/info response["role"] -> get_runtime_role()
+
+    Both the UI layout decision and every permission check read the same
+    function. Patching it is one line, touches no request/DB/verification code,
+    and keeps the image's ability to run genuine vendor licenses untouched.
+    Without it, a failed recheck or wiped license rows drop the whole instance
+    to V1: the UI switches to the V1 layout and every permission outside
+    ``V1_VIEW_LIST`` answers "V1用户缺少权限: <code>".
+    """
+    original = utils.get_runtime_role
+
+    @functools.wraps(original)
+    def get_runtime_role(*args, **kwargs):
+        try:
+            original(*args, **kwargs)
+        except Exception:
+            pass
+        return 'V2'
+
+    utils.get_runtime_role = get_runtime_role
+    _replace_references(sys, 'get_runtime_role', original, get_runtime_role)
+
 
 def _replace_references(sys, name, original, replacement):
     """Update modules that imported the callable by value."""
