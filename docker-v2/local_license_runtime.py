@@ -4,11 +4,9 @@ import json
 import os
 from pathlib import Path
 
-import requests
-
 LICENSE_DIR = Path('/app/license')
 VERIFY_PATH = '/iam/code/verify/'
-_original_post = requests.post
+_POST_PATCHED = False
 
 
 def local_license():
@@ -17,21 +15,47 @@ def local_license():
     return code, blob
 
 
-def post(url, *args, **kwargs):
-    from urllib.parse import urlparse
-    if urlparse(str(url)).path.rstrip('/') == VERIFY_PATH.rstrip('/'):
-        code, blob = local_license()
-        response = requests.Response()
-        response.status_code = 200
-        response.encoding = 'utf-8'
-        response._content = json.dumps({'result': True, 'message': 'Local test license',
-                                       'data': {'license_blob': blob, 'license_schema': 'signed_v1'}}).encode()
-        response.url = str(url)
-        return response
-    return _original_post(url, *args, **kwargs)
+def _patch_requests():
+    """Intercept the IAM verify call -- lazily, and only after gevent patched.
 
+    ``sitecustomize`` runs before ``applications`` calls
+    ``gevent.monkey.patch_all()``. Importing ``requests`` (and therefore
+    ``urllib3``/``ssl``) that early leaves those modules unpatched, which
+    breaks every later HTTPS call with
+    ``RecursionError: maximum recursion depth exceeded`` inside
+    ``ssl``/``enum``. So the import happens here, at first setup, not on
+    interpreter start.
+    """
+    global _POST_PATCHED
+    if _POST_PATCHED:
+        return
+    import requests
 
-requests.post = post
+    original_post = requests.post
+
+    @functools.wraps(original_post)
+    def post(url, *args, **kwargs):
+        from urllib.parse import urlparse
+
+        if urlparse(str(url)).path.rstrip('/') == VERIFY_PATH.rstrip('/'):
+            code, blob = local_license()
+            response = requests.Response()
+            response.status_code = 200
+            response.encoding = 'utf-8'
+            response._content = json.dumps(
+                {
+                    'result': True,
+                    'message': 'Local test license',
+                    'data': {'license_blob': blob, 'license_schema': 'signed_v1'},
+                }
+            ).encode()
+            response.url = str(url)
+            return response
+        return original_post(url, *args, **kwargs)
+
+    requests.post = post
+    _POST_PATCHED = True
+
 
 import django
 _original_setup = django.setup
@@ -45,6 +69,38 @@ def setup(*args, **kwargs):
 
 
 _CACHE_FALLBACK = {}
+
+
+def _patch_celery_pool():
+    """Publish tasks on a fresh broker connection instead of a pooled one.
+
+    Celery keeps producers in a pool. Under gevent, a connection created in one
+    (asgiref worker) thread is bound to that thread's hub; once the thread
+    exits, reusing it from another thread raises
+    ``greenlet.error: cannot switch to a different thread (which happens to
+    have exited)`` and the endpoint answers HTTP 500. Disabling the producer
+    pool makes every ``.delay()`` open and use its connection locally.
+    """
+    candidates = []
+    try:
+        from django_vue_cli.celery_app import app as django_celery_app
+
+        candidates.append(django_celery_app)
+    except Exception:
+        pass
+    try:
+        from celery import current_app
+
+        candidates.append(current_app)
+    except Exception:
+        pass
+
+    for app in candidates:
+        try:
+            app.conf.broker_pool_limit = 0
+            app.conf.broker_connection_retry_on_startup = True
+        except Exception:
+            pass
 
 
 def _install_greenlet_safe_cache():
@@ -118,7 +174,9 @@ def _install_greenlet_safe_cache():
 def install():
     import sys
 
+    _patch_requests()
     _install_greenlet_safe_cache()
+    _patch_celery_pool()
 
     import applications.user.utils as utils
     old = utils.verify_code
@@ -158,18 +216,28 @@ def _patch_license_state(utils):
     cannot produce a validated V2 state, compute it straight from the blob.
     """
     import sys
+    import threading
     import time
 
     old = utils.get_runtime_license_state
     if getattr(old, '_local_demo_adapter', False):
         return
 
+    guard = threading.local()
+
     @functools.wraps(old)
     def get_runtime_license_state(*args, **kwargs):
+        # The compiled original looks the name up in module globals, so a call
+        # from inside it would re-enter this wrapper and recurse forever.
+        if getattr(guard, 'busy', False):
+            return _v2_state_from_blob(utils)
+        guard.busy = True
         try:
             state = old(*args, **kwargs)
         except Exception:
             state = None
+        finally:
+            guard.busy = False
         if isinstance(state, dict) and state.get('role') == 'V2' and state.get('validated'):
             return state
         return _v2_state_from_blob(utils)

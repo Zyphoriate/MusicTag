@@ -48,7 +48,7 @@ docker run -d \
 
 `PUID` / `PGID` 用法与官方镜像一致（默认 0/0 以 root 运行）。
 
-与官方镜像的四点差异：
+与官方镜像的差异：
 
 1. `ENTRYPOINT` 自己执行 `migrate` + 写授权，然后再起 supervisord；`command:` 会被忽略。
 2. supervisord 里的 gunicorn 用 `/start-gunicorn.sh` 直接拉起，不再执行基镜像的 `/start`。
@@ -66,6 +66,13 @@ docker run -d \
    `V1用户缺少权限：xxx`。本镜像在正常路径拿不到已验证的 V2 时，直接用 blob 复算
    （`local_license_runtime._patch_license_state`）。实测把容器内 redis 停掉，
    `/user/info/` 仍返回 `role: "V2"`。
+5. `requests` 改成延迟导入（`_patch_requests`）。`sitecustomize` 在
+   `gevent.monkey.patch_all()` 之前就导入 `requests`/`urllib3`/`ssl`，会让这些模块
+   没被 patch，之后任何 HTTPS 调用都会 `RecursionError: maximum recursion depth
+   exceeded`（例如「下载 FFmpeg 失败」）。改成首次 `django.setup()` 时才导入。
+6. celery 生产者连接池设为 0（`_patch_celery_pool`）：`task.delay()` 复用在别的
+   （已退出）线程里创建的 redis 连接同样会 `greenlet.error`，`batch_update_id3`
+   这类接口直接 500。关掉池后每次发布用本地连接，实测 40 次并发发布 0 失败。
 
 ## 验证
 
