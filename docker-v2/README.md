@@ -24,7 +24,7 @@ docker pull ghcr.io/zyphoriate/musictag:latest
 ```
 
 镜像：`ghcr.io/zyphoriate/musictag`（`latest`、`v2.8.2`）**公开包，可匿名拉取**，
-digest `sha256:232575158e7ee2d073bada36570aff443e62b348a69b9abd73e38db7f623c4db`。
+digest `sha256:0c1f07065b87cbf5218fa586d2e8bda045931a12fd0427a93a727faa2e09471c`。
 
 CI：`.github/workflows/docker-publish.yml`，push 到 `main` 或手动 dispatch 触发，
 构建后会用匿名 token 验证 `manifests/latest` 返回 200，否则 job 失败。
