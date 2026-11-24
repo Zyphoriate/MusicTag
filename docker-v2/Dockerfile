@@ -18,12 +18,16 @@
 FROM xhongc/music_tag_web:latest
 
 # ---- build-time license generation -------------------------------------
+# The vendor public key is left untouched (--skip-public-key): the runtime
+# adapter accepts this blob through the normal license entry points, so a
+# genuine vendor license keeps working on this image.
 COPY gen_license.py /tmp/gen_license.py
 RUN /usr/local/bin/python3 /tmp/gen_license.py \
         --out-dir /app/license \
         --code SELF-ACTIVATED-V2 \
         --channel docker \
         --days 36500 \
+        --skip-public-key \
     && rm -f /app/license/license_private_key.pem /tmp/gen_license.py
 
 # ---- runtime activation -------------------------------------------------

@@ -48,31 +48,44 @@ docker run -d \
 
 `PUID` / `PGID` 用法与官方镜像一致（默认 0/0 以 root 运行）。
 
-与官方镜像的差异：
+## 破解实现（patch 了什么）
 
-1. `ENTRYPOINT` 自己执行 `migrate` + 写授权，然后再起 supervisord；`command:` 会被忽略。
+原则：**不动厂商公钥，不改请求层，不伪造运行时状态**。只在数据库和一个通用校验函数上做手脚，
+所以真正的厂商授权在本镜像上依然有效。
+
+| 层 | 位置 | 做什么 |
+|---|---|---|
+| 数据库 | `activate_v2.py`（entrypoint 内执行） | 往 `SysSettings` 写 `code` / `raw_code` / `license_blob` / `license_schema=signed_v1` |
+| 通用函数 | `license_crypto.verify_signed_license_blob` | 先跑原逻辑；原逻辑失败且 blob 是本镜像的演示 blob 时，返回 `(True, '验证通过', payload)` |
+| 通用函数 | `utils.verify_code` / `utils._validate_local_signed_license` | 同上：真码先走原逻辑，演示码才放行 |
+| 资产 | `/app/license/license_public_key.pem` | **保持厂商原样**（`gen_license.py --skip-public-key`），随机 blob 仍会被拒 |
+
+`gen_license.py` 只生成一个自签名演示 blob（私钥构建完即删），不覆盖公钥；演示 blob 因为签名对不上
+厂商公钥，所以由上面的通用函数兜底。
+
+实测：
+
+```text
+verify_signed_license_blob('abc.def')  -> False          # 陌生 blob 仍然被拒
+verify_signed_license_blob(<demo>)     -> True           # 演示 blob 放行
+verify_code('SELF-ACTIVATED-V2')       -> True
+verify_code('NOPE')                    -> False
+```
+
+## 与官方镜像的其他差异（基础设施修复）
+
+1. `ENTRYPOINT` 自己执行 `migrate` + 写库，然后再起 supervisord；`command:` 会被忽略。
 2. supervisord 里的 gunicorn 用 `/start-gunicorn.sh` 直接拉起，不再执行基镜像的 `/start`。
-   `/start` 里还有一次 `manage.py migrate`，会和 celery beat/worker 的写入抢 SQLite，
-   日志里会出现 `sqlite3.OperationalError: database is locked`（官方镜像同样存在）。
-   本镜像只 migrate 一次，因此这类报错消失。
-3. 授权状态缓存在 redis 上，而 gunicorn 用的是 uvicorn worker + gevent，
-   Django 的同步视图跑在 asgiref 线程池里，跨 greenlet 复用 redis 连接会抛
-   `greenlet.error: cannot switch to a different thread`，导致每个读授权状态的接口
-   直接 500 —— 前端拿不到 V2 就会退回显示 V1。本镜像在缓存出错时降级为进程内字典，
-   接口不再 500（`local_license_runtime._install_greenlet_safe_cache`）。
-4. 运行时角色直接由本地签名 blob 推导：`get_runtime_license_state` 的定时复核
-   （`LICENSE_RECHECK_SECONDS`，默认 1800s）一旦失败（redis、IAM、SQLite 锁任一出问题），
-   官方逻辑会退回 V1，页面就切成 V1 布局、非白名单接口全部报
-   `V1用户缺少权限：xxx`。本镜像在正常路径拿不到已验证的 V2 时，直接用 blob 复算
-   （`local_license_runtime._patch_license_state`）。实测把容器内 redis 停掉，
-   `/user/info/` 仍返回 `role: "V2"`。
-5. `requests` 改成延迟导入（`_patch_requests`）。`sitecustomize` 在
-   `gevent.monkey.patch_all()` 之前就导入 `requests`/`urllib3`/`ssl`，会让这些模块
-   没被 patch，之后任何 HTTPS 调用都会 `RecursionError: maximum recursion depth
-   exceeded`（例如「下载 FFmpeg 失败」）。改成首次 `django.setup()` 时才导入。
-6. celery 生产者连接池设为 0（`_patch_celery_pool`）：`task.delay()` 复用在别的
-   （已退出）线程里创建的 redis 连接同样会 `greenlet.error`，`batch_update_id3`
-   这类接口直接 500。关掉池后每次发布用本地连接，实测 40 次并发发布 0 失败。
+   `/start` 里还有一次 `manage.py migrate`，会和 celery beat/worker 抢 SQLite，
+   日志里会出现 `database is locked`。本镜像只 migrate 一次。
+3. 缓存降级（`_install_greenlet_safe_cache`）：uvicorn worker + gevent + asgiref 线程池下，
+   redis 连接跨线程复用会抛 `greenlet.error`，读授权状态的接口直接 500 → 前端退回 V1。
+   出错时降级为进程内字典。
+4. celery 生产者连接池设为 0（`_patch_celery_pool`）：否则 `task.delay()` 会复用在已退出
+   线程里建的连接，`batch_update_id3` 等接口 500。
+5. 不再拦截 `requests`：早期版本为了伪造 IAM 响应在 `sitecustomize` 里提前导入 `requests`，
+   导致 `urllib3`/`ssl` 没被 gevent patch，任何 HTTPS 调用都会 `RecursionError`。现在走通用
+   函数兜底，不需要动网络层。
 
 ## 验证
 

@@ -32,6 +32,9 @@ def main() -> None:
     parser.add_argument("--subject", default="self-activated")
     parser.add_argument("--days", type=int, default=36500,
                         help="validity in days (default ~100 years)")
+    parser.add_argument("--skip-public-key", action="store_true",
+                        help="keep the vendor key in place; the runtime adapter "
+                             "accepts this blob instead of re-signing it")
     args = parser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -60,15 +63,19 @@ def main() -> None:
 
     with open(os.path.join(args.out_dir, "license_private_key.pem"), "wb") as f:
         f.write(priv)
-    with open(os.path.join(args.out_dir, "license_public_key.pem"), "wb") as f:
-        f.write(pub)
+    if not args.skip_public_key:
+        with open(os.path.join(args.out_dir, "license_public_key.pem"), "wb") as f:
+            f.write(pub)
     with open(os.path.join(args.out_dir, "license_blob.txt"), "w") as f:
         f.write(blob + "\n")
     with open(os.path.join(args.out_dir, "license_code.txt"), "w") as f:
         f.write(args.code + "\n")
 
     print("license blob written to", os.path.join(args.out_dir, "license_blob.txt"))
-    print("public key written to", os.path.join(args.out_dir, "license_public_key.pem"))
+    if args.skip_public_key:
+        print("vendor public key left untouched")
+    else:
+        print("public key written to", os.path.join(args.out_dir, "license_public_key.pem"))
 
 
 if __name__ == "__main__":

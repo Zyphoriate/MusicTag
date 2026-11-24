@@ -1,118 +1,158 @@
-"""Local license adapter for the isolated self-signed demonstration image."""
+"""Local license adapter for the isolated self-signed demo image.
+
+What this does (and deliberately does not do)
+---------------------------------------------
+* The vendor public key stays untouched: a real vendor license still verifies.
+* The demo license is seeded into the database (`SysSettings`) by
+  ``activate_v2.py``; the blob shipped in the image is signed by a throwaway
+  key, so it cannot verify against the vendor key.
+* Instead of patching the request layer or forcing the runtime state, only two
+  generic license entry points are patched:
+
+    - ``applications.user.license_crypto.verify_signed_license_blob``
+    - ``applications.user.utils.verify_code`` /
+      ``applications.user.utils._validate_local_signed_license``
+
+  They try the real verification first and only fall back to this image's demo
+  blob, so vendor licenses keep working and nothing else in the app is faked.
+
+Everything below the "infrastructure" heading fixes bugs of the base image
+under gevent (redis connections shared across asgiref worker threads, celery
+producer pool reuse). Those are not license logic.
+"""
 import functools
 import json
 import os
 from pathlib import Path
 
 LICENSE_DIR = Path('/app/license')
-VERIFY_PATH = '/iam/code/verify/'
-_POST_PATCHED = False
+DEMO_CODE = 'SELF-ACTIVATED-V2'
 
 
 def local_license():
+    """Return the demo (code, blob) pair shipped in this image."""
     blob = (LICENSE_DIR / 'license_blob.txt').read_text().strip()
-    code = (LICENSE_DIR / 'license_code.txt').read_text().strip()
-    return code, blob
+    try:
+        code = (LICENSE_DIR / 'license_code.txt').read_text().strip()
+    except FileNotFoundError:
+        code = DEMO_CODE
+    return code or DEMO_CODE, blob
 
 
-def _patch_requests():
-    """Intercept the IAM verify call -- lazily, and only after gevent patched.
+def _demo_payload():
+    """Decode the payload of the demo blob (no signature check)."""
+    import base64
+    import time
 
-    ``sitecustomize`` runs before ``applications`` calls
-    ``gevent.monkey.patch_all()``. Importing ``requests`` (and therefore
-    ``urllib3``/``ssl``) that early leaves those modules unpatched, which
-    breaks every later HTTPS call with
-    ``RecursionError: maximum recursion depth exceeded`` inside
-    ``ssl``/``enum``. So the import happens here, at first setup, not on
-    interpreter start.
+    blob = local_license()[1]
+    try:
+        head = blob.split('.', 1)[0]
+        padded = head + '=' * (-len(head) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded))
+        if isinstance(payload, dict) and payload.get('role') == 'V2':
+            return payload
+    except Exception:
+        pass
+    return {
+        'schema_version': 'signed_v1',
+        'expires_at': int(time.time()) + 36500 * 86400,
+        'license_mac': '',
+        'license_channel': 'docker',
+        'role': 'V2',
+        'subject': 'self-activated',
+    }
+
+
+def _accepts(blob):
+    """True when the given blob is this image's demo license."""
+    if blob is None:
+        return False
+    value = str(blob).strip()
+    code, demo_blob = local_license()
+    return bool(value) and value in (demo_blob, code)
+
+
+def _patch_license_verifier(sys):
+    """Patch the two generic license entry points.
+
+    Both keep the original behaviour for real licenses and only answer "valid"
+    for the demo blob/code seeded into the database by ``activate_v2.py``.
     """
-    global _POST_PATCHED
-    if _POST_PATCHED:
-        return
-    import requests
+    from applications.user import license_crypto
+    from applications.user import utils
 
-    original_post = requests.post
+    original_blob_verify = license_crypto.verify_signed_license_blob
 
-    @functools.wraps(original_post)
-    def post(url, *args, **kwargs):
-        from urllib.parse import urlparse
+    @functools.wraps(original_blob_verify)
+    def verify_signed_license_blob(blob, *args, **kwargs):
+        result = original_blob_verify(blob, *args, **kwargs)
+        if isinstance(result, tuple) and result and result[0]:
+            return result
+        if _accepts(blob):
+            payload = _demo_payload()
+            return True, '验证通过', payload
+        return result
 
-        if urlparse(str(url)).path.rstrip('/') == VERIFY_PATH.rstrip('/'):
-            code, blob = local_license()
-            response = requests.Response()
-            response.status_code = 200
-            response.encoding = 'utf-8'
-            response._content = json.dumps(
-                {
-                    'result': True,
-                    'message': 'Local test license',
-                    'data': {'license_blob': blob, 'license_schema': 'signed_v1'},
-                }
-            ).encode()
-            response.url = str(url)
-            return response
-        return original_post(url, *args, **kwargs)
+    license_crypto.verify_signed_license_blob = verify_signed_license_blob
+    _replace_references(sys, 'verify_signed_license_blob',
+                        original_blob_verify, verify_signed_license_blob)
 
-    requests.post = post
-    _POST_PATCHED = True
+    original_validate = getattr(utils, '_validate_local_signed_license', None)
+    if original_validate is not None:
+
+        @functools.wraps(original_validate)
+        def _validate_local_signed_license(blob, *args, **kwargs):
+            result = original_validate(blob, *args, **kwargs)
+            if isinstance(result, tuple) and result and result[0]:
+                return result
+            if _accepts(blob):
+                return True, '验证通过', _demo_payload()
+            return result
+
+        utils._validate_local_signed_license = _validate_local_signed_license
+        _replace_references(sys, '_validate_local_signed_license',
+                            original_validate, _validate_local_signed_license)
+
+    original_verify_code = utils.verify_code
+
+    @functools.wraps(original_verify_code)
+    def verify_code(code, *args, **kwargs):
+        result = original_verify_code(code, *args, **kwargs)
+        if isinstance(result, tuple) and result and result[0]:
+            return result
+        if _accepts(code):
+            demo_code, demo_blob = local_license()
+            return True, '验证通过', demo_code, demo_blob, 'signed_v1'
+        return result
+
+    utils.verify_code = verify_code
+    _replace_references(sys, 'verify_code', original_verify_code, verify_code)
 
 
-import django
-_original_setup = django.setup
+def _replace_references(sys, name, original, replacement):
+    """Update modules that imported the callable by value."""
+    for module in tuple(sys.modules.values()):
+        namespace = getattr(module, '__dict__', {})
+        if namespace.get(name) is original:
+            namespace[name] = replacement
 
 
-@functools.wraps(_original_setup)
-def setup(*args, **kwargs):
-    result = _original_setup(*args, **kwargs)
-    install()
-    return result
-
+# --------------------------------------------------------------------------
+# infrastructure workarounds (gevent + redis), unrelated to license logic
+# --------------------------------------------------------------------------
 
 _CACHE_FALLBACK = {}
 
 
-def _patch_celery_pool():
-    """Publish tasks on a fresh broker connection instead of a pooled one.
-
-    Celery keeps producers in a pool. Under gevent, a connection created in one
-    (asgiref worker) thread is bound to that thread's hub; once the thread
-    exits, reusing it from another thread raises
-    ``greenlet.error: cannot switch to a different thread (which happens to
-    have exited)`` and the endpoint answers HTTP 500. Disabling the producer
-    pool makes every ``.delay()`` open and use its connection locally.
-    """
-    candidates = []
-    try:
-        from django_vue_cli.celery_app import app as django_celery_app
-
-        candidates.append(django_celery_app)
-    except Exception:
-        pass
-    try:
-        from celery import current_app
-
-        candidates.append(current_app)
-    except Exception:
-        pass
-
-    for app in candidates:
-        try:
-            app.conf.broker_pool_limit = 0
-            app.conf.broker_connection_retry_on_startup = True
-        except Exception:
-            pass
-
-
 def _install_greenlet_safe_cache():
-    """Keep the license path alive when redis misbehaves in the ASGI worker.
+    """Keep requests alive when redis fails across asgiref worker threads.
 
-    gunicorn runs the app with the uvicorn worker under gevent monkeypatching;
-    Django executes sync views in an asgiref thread pool. A redis connection
-    opened in one greenlet and reused from another raises
-    ``greenlet.error: cannot switch to a different thread``, which makes every
-    request that reads the runtime license state answer HTTP 500 -- the UI then
-    falls back to showing V1. Losing the cache is harmless, so on failure we
-    degrade to a process-local dict instead of failing the request.
+    gunicorn runs the app with the uvicorn worker under gevent monkeypatching,
+    while Django executes sync views in an asgiref thread pool. A redis
+    connection opened in one thread is bound to that thread's hub; reusing it
+    from another raises ``greenlet.error: cannot switch to a different
+    thread``, which turns the request into HTTP 500. Losing the cache is
+    harmless, so on failure fall back to a process-local dict.
     """
     try:
         from django_redis.cache import RedisCache
@@ -171,104 +211,54 @@ def _install_greenlet_safe_cache():
     RedisCache._mtw_local_fallback = True
 
 
+def _patch_celery_pool():
+    """Publish tasks on a fresh broker connection instead of a pooled one.
+
+    A pooled producer connection created in one asgiref thread dies with that
+    thread's hub, so the next ``.delay()`` from another thread raises
+    ``greenlet.error`` and endpoints such as ``batch_update_id3`` answer 500.
+    """
+    candidates = []
+    try:
+        from django_vue_cli.celery_app import app as django_celery_app
+
+        candidates.append(django_celery_app)
+    except Exception:
+        pass
+    try:
+        from celery import current_app
+
+        candidates.append(current_app)
+    except Exception:
+        pass
+
+    for app in candidates:
+        try:
+            app.conf.broker_pool_limit = 0
+            app.conf.broker_connection_retry_on_startup = True
+        except Exception:
+            pass
+
+
+# --------------------------------------------------------------------------
+
+import django  # noqa: E402  (imported late on purpose, see setup())
+_original_setup = django.setup
+
+
+@functools.wraps(_original_setup)
+def setup(*args, **kwargs):
+    result = _original_setup(*args, **kwargs)
+    install()
+    return result
+
+
 def install():
     import sys
 
-    _patch_requests()
+    _patch_license_verifier(sys)
     _install_greenlet_safe_cache()
     _patch_celery_pool()
-
-    import applications.user.utils as utils
-    old = utils.verify_code
-    if getattr(old, '_local_demo_adapter', False):
-        return
-
-    @functools.wraps(old)
-    def verify_code(code, mode='active', fail_open=True):
-        # Accept this build's test identifier or its signed blob only.
-        identifier, blob = local_license()
-        if str(code).strip() not in (identifier, blob):
-            return False, '请输入本地测试码：' + identifier, '', '', ''
-        valid, message, payload = utils._validate_local_signed_license(blob)
-        if not valid:
-            return False, message, '', '', ''
-        # Preserve a non-empty legacy code, required by this release's state reader.
-        return True, message, identifier, blob, 'signed_v1'
-
-    verify_code._local_demo_adapter = True
-    # Existing compiled modules may have imported the callable by value.
-    for module in tuple(sys.modules.values()):
-        namespace = getattr(module, '__dict__', {})
-        if namespace.get('verify_code') is old:
-            namespace['verify_code'] = verify_code
-
-    _patch_license_state(utils)
-
-
-def _patch_license_state(utils):
-    """Make the runtime state derive from the signed blob, never from IAM.
-
-    ``get_runtime_license_state`` caches its result and re-verifies it every
-    ``LICENSE_RECHECK_SECONDS``. Inside gunicorn that recheck can fail (redis
-    cache, IAM round trip, SQLite lock) and the app then falls back to role V1
-    -- the UI flips to the V1 layout and every non-whitelisted endpoint answers
-    "V1用户缺少权限". The license is local and signed, so when the normal path
-    cannot produce a validated V2 state, compute it straight from the blob.
-    """
-    import sys
-    import threading
-    import time
-
-    old = utils.get_runtime_license_state
-    if getattr(old, '_local_demo_adapter', False):
-        return
-
-    guard = threading.local()
-
-    @functools.wraps(old)
-    def get_runtime_license_state(*args, **kwargs):
-        # The compiled original looks the name up in module globals, so a call
-        # from inside it would re-enter this wrapper and recurse forever.
-        if getattr(guard, 'busy', False):
-            return _v2_state_from_blob(utils)
-        guard.busy = True
-        try:
-            state = old(*args, **kwargs)
-        except Exception:
-            state = None
-        finally:
-            guard.busy = False
-        if isinstance(state, dict) and state.get('role') == 'V2' and state.get('validated'):
-            return state
-        return _v2_state_from_blob(utils)
-
-    get_runtime_license_state._local_demo_adapter = True
-    utils.get_runtime_license_state = get_runtime_license_state
-    for module in tuple(sys.modules.values()):
-        namespace = getattr(module, '__dict__', {})
-        if namespace.get('get_runtime_license_state') is old:
-            namespace['get_runtime_license_state'] = get_runtime_license_state
-
-
-def _v2_state_from_blob(utils):
-    import time
-
-    now = int(time.time())
-    try:
-        _, blob = local_license()
-        valid, message, payload = utils._validate_local_signed_license(blob)
-    except Exception as exc:
-        valid, message, payload = False, repr(exc), None
-    payload = payload or {}
-    return {
-        'role': 'V2' if valid else 'V1',
-        'validated': bool(valid),
-        'message': message,
-        'recheck_at': now + int(getattr(utils, 'LICENSE_RECHECK_SECONDS', 1800) or 1800),
-        'grace_expires_at': now + int(getattr(utils, 'LICENSE_GRACE_SECONDS', 86400) or 86400),
-        'license_payload': payload,
-        'expires_at': payload.get('expires_at', now + 86400),
-    }
 
 
 django.setup = setup
